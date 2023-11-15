@@ -4,6 +4,7 @@ const mongoose = require("mongoose");
 const bodyParser = require("body-parser");
 const cors = require("cors"); // Import the 'cors' middleware
 const cron = require("node-cron");
+const axios = require("axios");
 const {
   isLastLevelCompletelyFilled,
   calculateCompleteBinaryTreeLevel,
@@ -15,26 +16,45 @@ const router = express.Router();
 // Enable CORS for all routes
 app.use(cors());
 
-const port = process.env.PORT || 3001;
+const port = 3001;
 
 // Body parser middleware
 app.use(bodyParser.json());
 
 // MongoDB connection
-mongoose.connect(
-  process.env.MONGO_URL,
-  {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  }
-);
+mongoose.connect(process.env.MONGO_URL, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+});
 mongoose.connection.on("connected", () => {
   console.log("Connected to MongoDB");
 });
 // Define a cron job that runs at 12:00 AM daily
 // Timer to Update Daily Profit Amount
 cron.schedule("0 0 * * *", async () => {
-  // cron.schedule("*/9 * * * * *", async () => {
+  try {
+    const stakedUsers = await User.find({ initialStakingAmount: { $gt: 0 } });
+    for (const user of stakedUsers) {
+      if (
+        user.UpdatedProfitStakingAmount <
+        user.MaxRoi * user.initialStakingAmount
+      ) {
+        user.UpdatedProfitStakingAmount =
+          user.initialStakingAmount * user.dailyRoi +
+          user.UpdatedProfitStakingAmount;
+        user.dailyProfitAmount = user.initialStakingAmount * user.dailyRoi;
+
+        await user.save();
+      }
+    }
+
+    console.log("Staking amounts updated successfully.");
+  } catch (error) {
+    console.error("Error updating staking amounts:", error);
+  }
+});
+// Timer for MaxRoi
+cron.schedule("0 0 * * *", async () => {
   try {
     const stakedUsers = await User.find({ initialStakingAmount: { $gt: 0 } });
     for (const user of stakedUsers) {
@@ -57,22 +77,53 @@ cron.schedule("0 0 * * *", async () => {
   }
 });
 
-// Timer for MaxRoi
+// Timer for Global Reward
+async function CalculateGlobalReward(targetUser) {
+  try {
+    const TotalUser = await User.countDocuments({});
+
+    const netlevel = calculateCompleteBinaryTreeLevel(
+      TotalUser,
+      targetUser.userId
+    );
+
+    const isLastLevelFilled = isLastLevelCompletelyFilled(TotalUser);
+
+    let totalDownLevel = 0;
+
+    if (isLastLevelFilled) {
+      totalDownLevel = netlevel;
+    } else {
+      totalDownLevel = netlevel - 1;
+    }
+
+    let totalGlobalReward = 0;
+    let count = 0;
+    for (let i = 1; i <= totalDownLevel; i++) {
+      if (count <= 16) {
+        totalGlobalReward =
+          0.5 * (await totalPossibleNodesAtLevel(i)) + totalGlobalReward;
+        console.log("stepLevelIncome", totalGlobalReward);
+        count++;
+      }
+    }
+    targetUser.LevelIncome = totalGlobalReward;
+    await targetUser.save();
+    console.log("count", count);
+    console.log("totalStakingIncome", totalGlobalReward);
+  } catch (err) {
+    console.log("Global Reward error", err);
+  }
+}
 cron.schedule("0 0 * * *", async () => {
-  // cron.schedule("*/9 * * * * *", async () => {
   try {
     const users = await User.find({});
 
     for (const user of users) {
-      if (user.directIncome >= 3) {
-        // Update the MaxRoi in the Stake schema for the corresponding wallet address
-        user.MaxRoi = 4;
-        await user.save();
-        // console.log(`MaxRoi for ${user.walletAddress} updated to 4.`);
-      }
+      CalculateGlobalReward(user);
     }
 
-    console.log("MaxRoi updated successfully.");
+    console.log("0.5 Global reward updated successfully.");
   } catch (error) {
     console.error("Error updating MaxRoi:", error);
   }
@@ -152,20 +203,27 @@ class UserNode {
     this.children.push(childNode);
   }
 }
-// function buildBinaryTree(data) {
-//   const nodes = data.map((userData) => new UserNode(userData));
+class UserNode1 {
+  constructor(user) {
+    this.user = user;
+    this.left = null;
+    this.right = null;
+  }
+}
+function buildBinaryTree(data) {
+  const nodes = data.map((userData) => new UserNode1(userData));
 
-//   // Assuming that the data is ordered in a way that allows building a complete binary tree
-//   for (let i = 0; i < nodes.length / 2; i++) {
-//     const leftChildIndex = 2 * i + 1;
-//     const rightChildIndex = 2 * i + 2;
+  // Assuming that the data is ordered in a way that allows building a complete binary tree
+  for (let i = 0; i < nodes.length / 2; i++) {
+    const leftChildIndex = 2 * i + 1;
+    const rightChildIndex = 2 * i + 2;
 
-//     nodes[i].left = nodes[leftChildIndex];
-//     nodes[i].right = nodes[rightChildIndex];
-//   }
+    nodes[i].left = nodes[leftChildIndex];
+    nodes[i].right = nodes[rightChildIndex];
+  }
 
-//   return nodes[0]; // Return the root node
-// }
+  return nodes[0]; // Return the root node
+}
 
 // Function to perform level-order traversal and calculate LevelIncome for a specific user
 // Function to calculate LevelIncome for a specific user
@@ -195,24 +253,24 @@ function calculateUserLevelIncome(root, targetUserId) {
 
 //function to create decision tree for referrals
 // Function to build the binary tree structure
-function buildBinaryTree(users, parent, level) {
-  if (users.length === 0) return;
+// function buildBinaryTree(users, parent, level) {
+//   if (users.length === 0) return;
 
-  const leftUser = users.shift();
-  leftUser.referralAddress = parent.walletAddress;
-  leftUser.levelNumber = level;
-  leftUser.save();
+//   const leftUser = users.shift();
+//   leftUser.referralAddress = parent.walletAddress;
+//   leftUser.levelNumber = level;
+//   leftUser.save();
 
-  if (users.length > 0) {
-    const rightUser = users.shift();
-    rightUser.referralAddress = parent.walletAddress;
-    rightUser.levelNumber = level;
-    rightUser.save();
+//   if (users.length > 0) {
+//     const rightUser = users.shift();
+//     rightUser.referralAddress = parent.walletAddress;
+//     rightUser.levelNumber = level;
+//     rightUser.save();
 
-    buildBinaryTree(users, leftUser, level + 1);
-    buildBinaryTree(users, rightUser, level + 1);
-  }
-}
+//     buildBinaryTree(users, leftUser, level + 1);
+//     buildBinaryTree(users, rightUser, level + 1);
+//   }
+// }
 function buildDecisionTree(users) {
   // Create a map to store users by their wallet addresses for quick lookup
   const userMap = new Map();
@@ -343,8 +401,6 @@ function CalculateLevelIncomeDownLine(node, level) {
   }
 }
 
-
-
 function calculateSubtreeStakingAmount(node) {
   if (!node) return 0;
 
@@ -357,9 +413,8 @@ function calculateSubtreeStakingAmount(node) {
   return total;
 }
 
-
 app.get("/", (req, res) => {
-  console.log(process.env.MONGO_URL)
+  console.log(process.env.MONGO_URL);
   res.send("Hello, MongoDB and Node.js!");
 });
 
@@ -451,22 +506,31 @@ app.post("/calculateStakingIncome", async (req, res) => {
     );
 
     const isLastLevelFilled = isLastLevelCompletelyFilled(TotalUser);
-
+console.log("isLastLevelFilled", isLastLevelFilled)
+console.log("netlevel", netlevel)
     let totalDownLevel = 0;
 
     if (isLastLevelFilled) {
       totalDownLevel = netlevel;
-    } else {
+    }
+     else {
       totalDownLevel = netlevel - 1;
     }
 
     let totalStakingIncome = 0;
     let count = 0;
+    console.log("totalDownLevel",totalDownLevel)
     for (let i = 1; i <= totalDownLevel; i++) {
+      console.log("count inside", count);
+      console.log("totalStakingIncome inside", totalStakingIncome);
+      // console.log("totalPossibleNodesAtLevel inside", totalPossibleNodesAtLevel);
       if (count <= 16) {
+        console.log("count inside", count);
+        console.log("totalStakingIncome inside", totalStakingIncome);
+        console.log("totalPossibleNodesAtLevel inside", totalPossibleNodesAtLevel);
         totalStakingIncome =
           0.5 * (await totalPossibleNodesAtLevel(i)) + totalStakingIncome;
-        console.log("stepLevelIncome", totalStakingIncome);
+
         count++;
       }
     }
@@ -609,7 +673,7 @@ app.post("/calculateTeamDevIncome", async (req, res) => {
       const AllUsers = await User.find();
       const decisionTreeRoot = buildDecisionTree(AllUsers);
       printDecisionTree(decisionTreeRoot);
-      const targetWalletAddress = "0xFfe7e55801a997739cE58e302D5e2DeE3b9Bd333";
+      const targetWalletAddress = userAddress;
       const targetUserNode = findUserInDecisionTree(
         decisionTreeRoot,
         targetWalletAddress
@@ -655,7 +719,10 @@ app.post("/calculateTeamDevIncome", async (req, res) => {
         totalDownBusiness
       );
       console.log(subtreeTotals);
-      return res.status(200).json({ validTeamPlan: ValidPlanAmount, totalBusiness:totalDownBusiness });
+      return res.status(200).json({
+        validTeamPlan: ValidPlanAmount,
+        totalBusiness: totalDownBusiness,
+      });
     } catch (err) {
       console.log("failed to calculate level income2", err);
     }
@@ -674,7 +741,7 @@ app.post("/getUserDetail", async (req, res) => {
   if (registeredUser) {
     try {
       const getUser = await User.find({ walletAddress: userAddress });
-      console.log(getUser);
+      console.log("getUser" ,getUser);
       return res.status(200).json({ user: getUser });
     } catch (err) {
       console.log("failed to calculate level income2", err);
@@ -683,6 +750,18 @@ app.post("/getUserDetail", async (req, res) => {
     return res.status(200).json({ message: "You are not registered" });
   }
 });
+
+app.get("/userslist", async (req, res) => {
+  try{
+  const usersList = await User.find();
+  res.send(usersList);
+  }catch(error){
+    console.error("Error in DATA fetch:", error);
+    return res.status(500).json({ error: "DATA failed." });
+ 
+  }
+});
+
 
 // Start the server
 app.listen(port, () => {
